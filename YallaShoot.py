@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QVBoxLayout, QScrollArea,
     QPushButton, QWidget, QMessageBox, QGroupBox, QSizePolicy
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 
 if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
     dll_path = os.path.join(sys._MEIPASS, "Libs")  # Temporary extraction path
@@ -55,8 +55,6 @@ class Stream:
 
         return categories
 
-
-
     def getChannels(self, category):
         """
         Returns all channels for a given category (league_en).
@@ -88,6 +86,14 @@ class Stream:
         # Return empty structure if no data is available
         return {"urls": [], "Referer": ""}
 
+    def isStreamWorking(self, url):
+        """Check if a stream is working by sending a HEAD request."""
+        try:
+            response = self.session.head(url, timeout=5)
+            return response.status_code == 200
+        except requests.RequestException:
+            return False
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -95,6 +101,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("IPTV")
         self.stream = Stream()
         self.initUI()
+        self.startCategoryRefresh()
 
     def initUI(self):
         self.mainWidget = QWidget()
@@ -104,6 +111,17 @@ class MainWindow(QMainWindow):
         # Enable right-click for return functionality
         self.mainWidget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.mainWidget.customContextMenuRequested.connect(self.onRightClick)
+
+        self.loadCategories()
+
+    def startCategoryRefresh(self):
+        """Set up a timer to refresh the categories every 10 seconds."""
+        self.refreshTimer = QTimer(self)
+        self.refreshTimer.timeout.connect(self.loadCategories)
+        self.refreshTimer.start(10000)  # Refresh every 10 seconds
+
+    def loadCategories(self):
+        self.clearLayout(self.mainLayout)
 
         # Create a group box for categories
         self.categoryGroupBox = QGroupBox("Categories")
@@ -142,12 +160,17 @@ class MainWindow(QMainWindow):
         # Adding channel buttons
         for channel in channels:
             button = QPushButton(channel.get("server_name_en", "Unknown Channel"))
+            button.setEnabled(False)  # Disable until test result is known
+
+            # Test stream in a separate thread and update the button color accordingly
+            threading.Thread(target=self.testStreamAndSetColor, args=(channel, button), daemon=True).start()
+
             button.clicked.connect(lambda checked, ch=channel: self.playChannel(ch))
             scrollLayout.addWidget(button)
 
         # Back button
         backButton = QPushButton("Back")
-        backButton.clicked.connect(self.initUI)
+        backButton.clicked.connect(self.loadCategories)
         scrollLayout.addWidget(backButton)
 
         # Apply layout to scrollWidget
@@ -163,6 +186,18 @@ class MainWindow(QMainWindow):
         # Adjust the main window size
         self.adjustSize()  # Adjust size based on channel list
         self.resize(self.sizeHint())  # Resize to fit the new content
+
+    def testStreamAndSetColor(self, channel, button):
+        stream = self.stream.getStream(channel)
+        if stream["urls"]:
+            is_working = self.stream.isStreamWorking(stream["urls"][0])
+            if is_working:
+                button.setStyleSheet("background-color: green")
+            else:
+                button.setStyleSheet("background-color: red")
+        else:
+            button.setStyleSheet("background-color: red")
+        button.setEnabled(True)  # Enable button after testing is done
 
     def playChannel(self, channel):
         # Fetch Stream and Play Using MPV
@@ -197,7 +232,7 @@ class MainWindow(QMainWindow):
             for i in range(self.mainLayout.count()):
                 item = self.mainLayout.itemAt(i)
                 if item and item.widget() == self.channelGroupBox:
-                    self.initUI()
+                    self.loadCategories()
                     break
 
     def clearLayout(self, layout):
