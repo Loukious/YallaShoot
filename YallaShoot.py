@@ -45,13 +45,23 @@ class Stream:
 
         for match in self.data:
             league = match.get("league_en", "").strip()
+            home_team = match.get("home_en", "").strip()
+            away_team = match.get("away_en", "").strip()
+            
+            # Handle home == away case
+            match_info = f"{home_team}" if home_team == away_team else f"{home_team} vs {away_team}"
+            
             channels = match.get("channels", [])
 
             if channels:  # Only include categories that have channels
+                # Add match info to each channel
+                enriched_channels = [
+                    {**channel, "match_info": match_info} for channel in channels
+                ]
                 if league in categories:
-                    categories[league].extend(channels)
+                    categories[league].extend(enriched_channels)
                 else:
-                    categories[league] = channels
+                    categories[league] = enriched_channels
 
         return categories
 
@@ -99,7 +109,9 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("IPTV")
+        self.setMinimumSize(300, 600)
         self.stream = Stream()
+        self.currentView = "categories"  # Tracks the current view ('categories' or 'channels')
         self.initUI()
         self.startCategoryRefresh()
 
@@ -117,10 +129,16 @@ class MainWindow(QMainWindow):
     def startCategoryRefresh(self):
         """Set up a timer to refresh the categories every 10 seconds."""
         self.refreshTimer = QTimer(self)
-        self.refreshTimer.timeout.connect(self.loadCategories)
+        self.refreshTimer.timeout.connect(self.refreshCategories)
         self.refreshTimer.start(10000)  # Refresh every 10 seconds
 
+    def refreshCategories(self):
+        """Refresh categories only if the current view is 'categories'."""
+        if self.currentView == "categories":
+            self.loadCategories()
+
     def loadCategories(self):
+        self.currentView = "categories"  # Update view state
         self.clearLayout(self.mainLayout)
 
         # Create a group box for categories
@@ -141,6 +159,7 @@ class MainWindow(QMainWindow):
         self.resize(self.sizeHint())  # Resize to fit the new content
 
     def loadChannels(self, category_name, channels):
+        self.currentView = "channels"  # Update view state
         self.clearLayout(self.mainLayout)
 
         self.channelGroupBox = QGroupBox(f"Channels in {category_name}")
@@ -157,16 +176,32 @@ class MainWindow(QMainWindow):
         scrollLayout = QVBoxLayout(scrollWidget)
         scrollWidget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
-        # Adding channel buttons
+        # Group channels by match_info
+        grouped_channels = {}
         for channel in channels:
-            button = QPushButton(channel.get("server_name_en", "Unknown Channel"))
-            button.setEnabled(False)  # Disable until test result is known
+            match_info = channel.get("match_info", "Unknown Match")
+            if match_info not in grouped_channels:
+                grouped_channels[match_info] = []
+            grouped_channels[match_info].append(channel)
 
-            # Test stream in a separate thread and update the button color accordingly
-            threading.Thread(target=self.testStreamAndSetColor, args=(channel, button), daemon=True).start()
+        # Create QGroupBox for each match
+        for match_info, match_channels in grouped_channels.items():
+            matchGroupBox = QGroupBox(match_info)
+            matchLayout = QVBoxLayout(matchGroupBox)
 
-            button.clicked.connect(lambda checked, ch=channel: self.playChannel(ch))
-            scrollLayout.addWidget(button)
+            # Add buttons for channels in this match
+            for channel in match_channels:
+                button = QPushButton(channel.get("server_name_en", "Unknown Channel"))
+                button.setEnabled(False)  # Disable until test result is known
+
+                # Test stream in a separate thread and update the button color accordingly
+                threading.Thread(target=self.testStreamAndSetColor, args=(channel, button), daemon=True).start()
+
+                button.clicked.connect(lambda checked, ch=channel: self.playChannel(ch))
+                matchLayout.addWidget(button)
+
+            # Add the match group box to the main layout
+            scrollLayout.addWidget(matchGroupBox)
 
         # Back button
         backButton = QPushButton("Back")
